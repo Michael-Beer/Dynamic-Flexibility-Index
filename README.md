@@ -259,6 +259,3 @@ Not yet done: comparison with the authors' DFI/DCI code, or reproduction of the 
 
 If you use this script, please cite the original method paper (above). Add a citation for this repository here once it has a DOI or release.
 
-## License
-
-Add a license (e.g. MIT) before publishing.
