@@ -1,4 +1,4 @@
-# dfi_analysis
+# Dynamic Flexibilit Index and Dynamic Coupling Analysis
 
 Dynamic Flexibility Index (DFI) and Dynamic Coupling Index (DCI) analysis of molecular dynamics trajectories, in a single Python script built on [MDAnalysis](https://www.mdanalysis.org/).
 
