@@ -10,6 +10,8 @@ from MD trajectories, following the Methods of
 Subcommands
 -----------
   dfi      trajectory -> per-residue DFI / %DFI (+ DCI to active site, DARC flags)
+  dci      saved response matrix -> DCI / %DCI to any residue sets, set-to-set coupling,
+           full pairwise DCI map (no trajectory needed)
   compare  two DFI tables -> common / non-common hinges, sequence conservation
   cluster  several DFI tables -> SVD/PCA of %DFI profiles (paper Figs 3-4)
 
@@ -46,6 +48,7 @@ Examples
   python dfi_analysis.py dfi acyl.prmtop -t rep1.nc rep2.nc --protein-sel "protein or resid 42" --aa-override 42=S --active-site 42,...  # covalent adduct
   python dfi_analysis.py dfi system.prmtop -t seg1.nc seg2.nc --concat -o TEM1  # restart segments of one run
   python dfi_analysis.py dfi system.prmtop -t prod.nc --converge -o TEM1_conv
+  python dfi_analysis.py dci TEM1 --set active=70,73,130,132,166,234 --set loop=100-110 --pairwise
   python dfi_analysis.py compare GNCA_dfi.csv TEM1_dfi.csv --labels GNCA TEM-1 -o GNCA_vs_TEM1
   python dfi_analysis.py cluster GNCA_dfi.csv GNCA-XY_dfi.csv GNCA-XYZ_dfi.csv TEM1_dfi.csv -o pca
   # different numbering: realign on equivalent (e.g. active-site) residues, same order in each list
@@ -499,6 +502,76 @@ def cmd_cluster(a):
         fig.savefig(f"{a.out}_pca.png", dpi=200)
 
 
+# --------------------------------------------------------------------------- subcommand: dci
+def cmd_dci(a):
+    """DCI from a saved response matrix. No trajectory needed: define as many residue sets as you like."""
+    from types import SimpleNamespace
+
+    df = pd.read_csv(f"{a.prefix}_dfi.csv")
+    A = np.load(f"{a.prefix}_response_matrix.npy")
+    if A.shape[0] != len(df):
+        sys.exit(f"{a.prefix}_response_matrix.npy is {A.shape[0]} x {A.shape[0]} but "
+                 f"{a.prefix}_dfi.csv has {len(df)} residues; they must come from the same dfi run.")
+    ids = SimpleNamespace(resids=df["resid"].to_numpy())  # residue numbers as written by the dfi step
+    if not a.set and not a.pairwise:
+        sys.exit("Give at least one --set NAME=RESIDS, or --pairwise for the whole-protein coupling map.")
+    sets = {}
+    for item in a.set:
+        if "=" not in item:
+            sys.exit(f"--set expects NAME=RESIDS (e.g. active=70,73,130-132), got '{item}'")
+        name, txt = item.split("=", 1)
+        sets[name] = resid_indices(ids, parse_resids(txt), f"--set {name}")
+    out_prefix = a.out or a.prefix
+
+    out = df[[c for c in ["resid", "resname", "aa", "pDFI", "hinge"] if c in df.columns]].copy()
+    for name, idx in sets.items():
+        dci = dci_to_sites(A, idx)  # Eq. 6
+        out[f"DCI_{name}"] = dci
+        out[f"pDCI_{name}"] = pct_rank(dci)
+    if sets:
+        out.to_csv(f"{out_prefix}_dci.csv", index=False, float_format="%.5f")
+        print(f"Wrote {out_prefix}_dci.csv")
+
+    for name, idx in sets.items():
+        outside = out[~out.index.isin(idx)]
+        hi = outside[outside[f"pDCI_{name}"] > a.dci_cut].sort_values(f"pDCI_{name}", ascending=False)
+        shown = hi["resid"].tolist()[:30]
+        more = f" (+{len(hi) - 30} more)" if len(hi) > 30 else ""
+        print(f"{name}: {len(hi)} residues outside the set with %DCI > {a.dci_cut}: {shown}{more}")
+
+    M = dci_pairwise(A)  # Eq. 7: M[i, j] = coupling of residue i to a kick at residue j
+    if len(sets) >= 2:
+        names = list(sets)
+        tab = pd.DataFrame([[M[np.ix_(sets[x], sets[y])].mean() for y in names] for x in names],
+                           index=names, columns=names)
+        tab.index.name = "responding_set(rows)/perturbed_set(cols)"
+        tab.to_csv(f"{out_prefix}_dci_sets.csv", float_format="%.4f")
+        print("\nMean pairwise DCI (Eq. 7) between sets; rows respond to kicks applied in columns; "
+              "1.0 = an average kick:")
+        print(tab.round(3).to_string())
+
+    if a.pairwise:
+        np.save(f"{out_prefix}_dci_pairwise.npy", M)
+        pd.DataFrame(M, index=df["resid"], columns=df["resid"]).to_csv(
+            f"{out_prefix}_dci_pairwise.csv", float_format="%.4f")
+        plt = _plt()
+        if plt:
+            fig, ax = plt.subplots(figsize=(6, 5))
+            im = ax.imshow(M, origin="lower", cmap="viridis", vmax=np.percentile(M, 99), aspect="equal")
+            tick = np.linspace(0, len(df) - 1, min(10, len(df))).astype(int)
+            ax.set_xticks(tick)
+            ax.set_xticklabels(df["resid"].iloc[tick], rotation=90, fontsize=7)
+            ax.set_yticks(tick)
+            ax.set_yticklabels(df["resid"].iloc[tick], fontsize=7)
+            ax.set_xlabel("perturbed residue j")
+            ax.set_ylabel("responding residue i")
+            fig.colorbar(im, label="pairwise DCI (Eq. 7; colour scale capped at 99th percentile)")
+            fig.tight_layout()
+            fig.savefig(f"{out_prefix}_dci_pairwise.png", dpi=200)
+            plt.close(fig)
+        print(f"Wrote {out_prefix}_dci_pairwise.npy/.csv/.png")
+
+
 # --------------------------------------------------------------------------- CLI
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -532,6 +605,16 @@ def main():
                         "(default: each file is an independent repeat)")
     d.add_argument("--converge", action="store_true", help="compare profiles across 25/50/75/100 ns windows")
     d.set_defaults(func=cmd_dfi)
+
+    q = sub.add_parser("dci", help="DCI / coupling analysis from a saved response matrix (no trajectory)")
+    q.add_argument("prefix", help="prefix used with the dfi step: reads PREFIX_dfi.csv and PREFIX_response_matrix.npy")
+    q.add_argument("--set", action="append", default=[], metavar="NAME=RESIDS",
+                   help="named residue set, e.g. --set active=70,73,130-132,166,234 (repeatable). "
+                        "Residue ids are those in PREFIX_dfi.csv. Optional if --pairwise is given.")
+    q.add_argument("--dci-cut", type=float, default=0.8, help="%%DCI above this is listed as strongly coupled")
+    q.add_argument("--pairwise", action="store_true", help="also save the full pairwise DCI matrix and heat map")
+    q.add_argument("-o", "--out", default=None, help="output prefix (default: same as PREFIX)")
+    q.set_defaults(func=cmd_dci)
 
     c = sub.add_parser("compare", help="classify hinges between two proteins")
     c.add_argument("csv_a")
