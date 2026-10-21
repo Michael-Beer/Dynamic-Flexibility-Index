@@ -8,7 +8,7 @@ The method follows the Methods of:
 
 From a trajectory it tells you which residues behave as rigid **hinges**, which are flexible, and how strongly each residue is dynamically coupled to a functional site (e.g. the active site). Tables from several proteins or states can then be compared (hinge shifts) or clustered (PCA of flexibility profiles).
 
-> **Status.** This is an independent re-implementation written from the paper's Methods. It has been tested against an analytic elastic-network model (see [Validation](#validation)) but **not yet benchmarked against the authors' reference code** (https://github.com/SBOZKAN/DFI-DCI) or published values. Please check results on a system with known answers before relying on it.
+> **Status.** This is an independent re-implementation written from the paper's Methods. It has **not been benchmarked against the authors' reference code** (https://github.com/SBOZKAN/DFI-DCI) or published values. Please check results on a system with known answers before relying on it.
 
 ---
 
