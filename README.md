@@ -1,4 +1,4 @@
-# Dynamic-Flexibility-Index
+# dfi_analysis
 
 Dynamic Flexibility Index (DFI) and Dynamic Coupling Index (DCI) analysis of molecular dynamics trajectories, in a single Python script built on [MDAnalysis](https://www.mdanalysis.org/).
 
@@ -8,7 +8,7 @@ The method follows the Methods of:
 
 From a trajectory it tells you which residues behave as rigid **hinges**, which are flexible, and how strongly each residue is dynamically coupled to a functional site (e.g. the active site). Tables from several proteins or states can then be compared (hinge shifts) or clustered (PCA of flexibility profiles).
 
-> **Status.** This is an independent re-implementation written from the paper's Methods.
+> **Status.** This is an independent re-implementation written from the paper's Methods. It has been tested against an analytic elastic-network model (see [Validation](#validation)) but **not yet benchmarked against the authors' reference code** (https://github.com/SBOZKAN/DFI-DCI) or published values. Please check results on a system with known answers before relying on it.
 
 ---
 
@@ -16,8 +16,9 @@ From a trajectory it tells you which residues behave as rigid **hinges**, which 
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [The three subcommands](#the-three-subcommands)
+- [The subcommands](#the-subcommands)
   - [`dfi`: trajectory to DFI/DCI](#dfi-trajectory-to-dfidci)
+  - [`dci`: coupling analysis from a saved run](#dci-coupling-analysis-from-a-saved-run)
   - [`compare`: hinge shifts between two proteins](#compare-hinge-shifts-between-two-proteins)
   - [`cluster`: PCA of flexibility profiles](#cluster-pca-of-flexibility-profiles)
 - [Method summary](#method-summary)
@@ -64,20 +65,23 @@ python dfi_analysis.py dfi system.prmtop -t rep1.nc rep2.nc rep3.nc \
 # 2. Is the profile stable with respect to window length?
 python dfi_analysis.py dfi system.prmtop -t rep1.nc rep2.nc rep3.nc --converge -o TEM1
 
-# 3. Compare hinges between two proteins (same numbering)
+# 3. DCI to any residue sets, from the saved run (no trajectory needed)
+python dfi_analysis.py dci TEM1 --set active=70,73,130,132,166,234 --set loop=100-110 --pairwise
+
+# 4. Compare hinges between two proteins (same numbering)
 python dfi_analysis.py compare TEM1_dfi.csv KPC2_dfi.csv --labels TEM1 KPC2 -o TEM1_vs_KPC2
 
-# 4. Cluster several proteins/states by their %DFI profiles
+# 5. Cluster several proteins/states by their %DFI profiles
 python dfi_analysis.py cluster TEM1_dfi.csv KPC2_dfi.csv SHV1_dfi.csv -o clusters
 ```
 
 The residue numbers in `--active-site` are the **topology's** residue ids, which may differ from literature numbering (e.g. Ambler). The numbers above are placeholders.
 
-`compare` and `cluster` work on the `*_dfi.csv` tables written by `dfi`; only `dfi` reads trajectories.
+`dci`, `compare` and `cluster` work on the files written by `dfi`; only `dfi` reads trajectories.
 
 ---
 
-## The three subcommands
+## The subcommands
 
 ### `dfi`: trajectory to DFI/DCI
 
@@ -122,6 +126,31 @@ python dfi_analysis.py dfi acyl.prmtop -t rep1.nc rep2.nc \
 The backbone atoms of that residue must be named `N`, `CA`, `C`, `O`. A note is printed if some selected residue has no `CA`. `--aa-override` supplies the one-letter code for the `aa` column (otherwise `X`), which matters for sequence conservation in `compare`. Only Cα atoms enter the covariance, so ligand atoms influence the result through the dynamics but are not themselves part of the matrix.
 
 **`--converge`.** Recomputes the mean DFI profile with 25, 50, 75 and 100 ns windows (using your skip and lag), prints the Pearson correlation between the profiles and writes `<out>_convergence.csv`. High agreement means the profile does not depend on window length. It runs *instead of* the normal analysis, so run both. It is slower (four passes over the data), and agreement between windows does not prove that all relevant conformations were sampled.
+
+### `dci`: coupling analysis from a saved run
+
+```
+python dfi_analysis.py dci PREFIX --set NAME=RESIDS [--set ...] [options]
+```
+
+Reads `PREFIX_dfi.csv` and `PREFIX_response_matrix.npy` from an earlier `dfi` run, so you can define and change residue sets without reprocessing the trajectory. `dfi --active-site` gives the same numbers for one set; this command is for any number of named sets afterwards.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--set NAME=RESIDS` | repeatable; needed unless `--pairwise` is given | A named residue set, e.g. `--set active=70,73,130-132,166,234`. Residue ids are those in `PREFIX_dfi.csv` (the topology's numbering). |
+| `--dci-cut` | 0.8 | Residues outside a set with %DCI above this are listed. |
+| `--pairwise` | off | Also save the full pairwise DCI matrix and a heat map. |
+| `-o, --out` | same as `PREFIX` | Output prefix. |
+
+For each set the script writes DCI (Eq. 6: how strongly each residue responds when the set is perturbed, relative to its average response) and %DCI (percentile rank across residues), next to %DFI and the hinge flag from the `dfi` step. This is the screen behind DARC candidates: mid-range %DFI together with high %DCI to the active site.
+
+With two or more sets it also writes a set-by-set table of mean pairwise DCI (Eq. 7). Rows are the responding set and columns the perturbed set; 1.0 means an average kick, above 1 means stronger-than-average coupling. The table is not symmetric, because it measures how set X responds to kicks in set Y, not the reverse.
+
+DCI needs a functional set to be coupled *to*. DCI to every residue in the protein is 1 for all residues by construction, so there is no whole-protein version of Eq. 6. For a whole-protein picture use `--pairwise` on its own (no `--set`), which gives the coupling of every residue pair.
+
+With `--pairwise`, the matrix `M[i, j]` is the coupling of residue *i* to a perturbation at residue *j* (each row averages 1). The heat map's colour scale is capped at the 99th percentile so a few strong entries don't wash out the rest.
+
+**Note.** DCI is computed from the response matrix averaged over all windows and repeats, not averaged per window. `dfi` does the same.
 
 ### `compare`: hinge shifts between two proteins
 
@@ -197,7 +226,7 @@ Per window (following the paper's Methods; equation numbers are the paper's):
    DCI_i = [ sum_{j in F} A[i,j] / |F| ] / [ sum_j A[i,j] / N ]
    ```
 
-   with **%DCI** its percentile rank. Pairwise coupling (Eq. 7) is `A[i,j] / mean_j(A[i,:])`; the full matrix is saved so you can compute it yourself (see below).
+   with **%DCI** its percentile rank. Pairwise coupling (Eq. 7) is `A[i,j] / mean_j(A[i,:])`; the `dci` subcommand computes it for any residue sets.
 6. **DARC candidates**: %DFI between 0.3 and 0.5, %DCI to the active site > 0.8, more than 8 Å (minimum heavy-atom distance, first analysed frame) from the active site, and, if `--targets` is given, %DCI to the targets > 0.8.
 
 For `compare`, `cluster` and the PCA distance (Eq. 9) see the subcommand sections above.
@@ -225,6 +254,8 @@ Row/column order follows the `resid` column of `TEM1_dfi.csv`.
 | `P_dfi.png` | %DFI along the sequence, hinge region shaded, DARC candidates marked. |
 | `P_convergence.csv` | With `--converge` only: mean DFI per window size. |
 
+`dci` (prefix `P`): `P_dci.csv` (per residue: `DCI_<set>` and `pDCI_<set>` for each set, plus `pDFI` and `hinge`), `P_dci_sets.csv` (set-by-set coupling, two or more sets), and with `--pairwise` `P_dci_pairwise.npy`, `.csv` and `.png`.
+
 `compare` (prefix `P`): `P_hinges.csv` (per matched residue: %DFI in each protein, change, category, sequence conservation), `P_profiles.png` (overlaid profiles), and `P_map.txt` (with anchors).
 
 `cluster` (prefix `P`): `P_pca.csv` (coordinates), `P_distances.csv` (reduced-space distances), `P_pca.png` (PC1 vs PC2).
@@ -249,6 +280,7 @@ Row/column order follows the `resid` column of `TEM1_dfi.csv`.
 Tested on synthetic data only:
 
 - A trajectory sampled from an elastic-network model's covariance, with a random rigid-body rotation and translation applied to every frame, reproduced the model's analytic DFI (Pearson r = 0.9995), which checks the fitting, covariance and response-matrix pipeline end to end.
+- The `dci` subcommand reproduced the DCI and %DCI that `dfi` writes for the same sets, and every row of the pairwise matrix averages 1 as Eq. 7 requires.
 - Anchor-based realignment recovered all true residue pairs (57/57) on a synthetic pair of sequences containing a 2-residue insertion, a 3-residue deletion and point mutations, and placed both indels at the correct positions.
 
 Not yet done: comparison with the authors' DFI/DCI code, or reproduction of the paper's reported numbers (e.g. the hinge counts for GNCA vs TEM-1).
@@ -257,5 +289,4 @@ Not yet done: comparison with the authors' DFI/DCI code, or reproduction of the 
 
 ## Citation
 
-If you use this script, please cite the original method paper (above). Add a citation for this repository here once it has a DOI or release.
-
+If you use this script, please cite the original method paper (above).
